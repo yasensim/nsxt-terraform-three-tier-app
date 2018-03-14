@@ -15,9 +15,6 @@ variable "nsx_tag" {
 variable "nsx_t1_router_name" {
     default = "terraform-demo-router"
 }
-variable "nsx_switch_name" {
-    default = "terraform-demo-ls"
-}
 variable "vsphere_user" {
     default = "administrator@yasen.local"
 }
@@ -41,7 +38,7 @@ variable "db_pass" {
     default = "VMware1!"
 }
 variable "db_host" {
-    default = "192.168.245.10"
+    default = "192.168.247.2"
 }
 
 
@@ -64,11 +61,11 @@ data "nsxt_edge_cluster" "edge_cluster1" {
     display_name = "EdgeCluster1"
 }
 
-# Create NSX-T Logical Switch
-resource "nsxt_logical_switch" "switch1" {
+# Create Web Tier NSX-T Logical Switch
+resource "nsxt_logical_switch" "web" {
     admin_state = "UP"
     description = "LS created by Terraform"
-    display_name = "${var.nsx_switch_name}"
+    display_name = "web-tier"
     transport_zone_id = "${data.nsxt_transport_zone.overlay_tz.id}"
     replication_mode = "MTEP"
     tag {
@@ -76,10 +73,48 @@ resource "nsxt_logical_switch" "switch1" {
 	tag = "${var.nsx_tag}"
     }
     tag {
-	scope = "tenant"
-	tag = "second_example_tag"
+	scope = "tier"
+	tag = "web"
     }
 }
+
+# Create App Tier NSX-T Logical Switch
+resource "nsxt_logical_switch" "app" {
+    admin_state = "UP"
+    description = "LS created by Terraform"
+    display_name = "app-tier"
+    transport_zone_id = "${data.nsxt_transport_zone.overlay_tz.id}"
+    replication_mode = "MTEP"
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+    tag {
+	scope = "tier"
+	tag = "app"
+    }
+}
+
+
+# Create DB Tier NSX-T Logical Switch
+resource "nsxt_logical_switch" "db" {
+    admin_state = "UP"
+    description = "LS created by Terraform"
+    display_name = "db-tier"
+    transport_zone_id = "${data.nsxt_transport_zone.overlay_tz.id}"
+    replication_mode = "MTEP"
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+    tag {
+	scope = "tier"
+	tag = "db"
+    }
+}
+
+
+
 
 # Create T1 router
 resource "nsxt_logical_tier1_router" "tier1_router" {
@@ -121,12 +156,12 @@ resource "nsxt_logical_router_link_port_on_tier1" "link_port_tier1" {
     }
 }
 
-# Create a switchport on our logical switch
+# Create a switchport on App logical switch
 resource "nsxt_logical_port" "logical_port1" {
   admin_state       = "UP"
   description       = "LP1 provisioned by Terraform"
-  display_name      = "LP1"
-  logical_switch_id = "${nsxt_logical_switch.switch1.id}"
+  display_name      = "AppToT1"
+  logical_switch_id = "${nsxt_logical_switch.app.id}"
     tag {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
@@ -189,6 +224,57 @@ resource "nsxt_static_route" "static_route" {
     }
 }
 
+# Create a switchport on Web logical switch
+resource "nsxt_logical_port" "logical_port2" {
+  admin_state       = "UP"
+  description       = "LP1 provisioned by Terraform"
+  display_name      = "WebToT1"
+  logical_switch_id = "${nsxt_logical_switch.web.id}"
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+}
+
+# Create downlink port on the T1 router and connect it to the switchport we created earlier
+resource "nsxt_logical_router_downlink_port" "downlink_port2" {
+  description                   = "DP2 provisioned by Terraform"
+  display_name                  = "DP2"
+  logical_router_id             = "${nsxt_logical_tier1_router.tier1_router.id}"
+  linked_logical_switch_port_id = "${nsxt_logical_port.logical_port2.id}"
+  ip_address                    = "10.29.15.209/28"
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+}
+
+# Create a switchport on DB logical switch
+resource "nsxt_logical_port" "logical_port3" {
+  admin_state       = "UP"
+  description       = "LP3 provisioned by Terraform"
+  display_name      = "DBToT1"
+  logical_switch_id = "${nsxt_logical_switch.db.id}"
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+}
+
+# Create downlink port on the T1 router and connect it to the switchport we created earlier
+resource "nsxt_logical_router_downlink_port" "downlink_port3" {
+  description                   = "DP3 provisioned by Terraform"
+  display_name                  = "DP3"
+  logical_router_id             = "${nsxt_logical_tier1_router.tier1_router.id}"
+  linked_logical_switch_port_id = "${nsxt_logical_port.logical_port3.id}"
+  ip_address                    = "192.168.247.1/24"
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+}
+
+
 # Create NSGROUP with dynamic membership criteria
 # all Virtual Machines with the specific tag and scope
 resource "nsxt_ns_group" "nsgroup" {
@@ -205,17 +291,84 @@ resource "nsxt_ns_group" "nsgroup" {
     }
 }
 
-# Create NSService for multiple ports, we will use it later in the fw section for some rules
-resource "nsxt_l4_port_set_ns_service" "http_l4" {
-  description       = "L4 Port range provisioned by Terraform"
-  display_name      = "HTTP"
-  protocol          = "TCP"
-  destination_ports = ["80", "8080", "443", "8443"]
+# Create Web NSGROUP
+resource "nsxt_ns_group" "webnsgroup" {
+  description  = "NSGroup provisioned by Terraform"
+  display_name = "web-terraform-demo-sg"
+  membership_criteria {
+    target_type = "VirtualMachine"
+    scope       = "tier"
+    tag         = "web"
+  }
     tag {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
     }
 }
+# Create App NSGROUP
+resource "nsxt_ns_group" "appnsgroup" {
+  description  = "NSGroup provisioned by Terraform"
+  display_name = "app-terraform-demo-sg"
+  membership_criteria {
+    target_type = "VirtualMachine"
+    scope       = "tier"
+    tag         = "app"
+  }
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+}
+# Create DB NSGROUP
+resource "nsxt_ns_group" "dbnsgroup" {
+  description  = "NSGroup provisioned by Terraform"
+  display_name = "db-terraform-demo-sg"
+  membership_criteria {
+    target_type = "VirtualMachine"
+    scope       = "tier"
+    tag         = "db"
+  }
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+}
+
+# Create NSService for App service that listens on port 8443
+resource "nsxt_l4_port_set_ns_service" "app" {
+  description       = "L4 Port range provisioned by Terraform"
+  display_name      = "App Service"
+  protocol          = "TCP"
+  destination_ports = ["8443"]
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+}
+# Create NSService for multiple ports, we will use it later in the fw section for some rules
+resource "nsxt_l4_port_set_ns_service" "web" {
+  description       = "L4 Port range provisioned by Terraform"
+  display_name      = "HTTP"
+  protocol          = "TCP"
+  destination_ports = ["443", "80"]
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+}
+
+# Create NSService for MySQL
+resource "nsxt_l4_port_set_ns_service" "mysql" {
+  description       = "L4 Port range provisioned by Terraform"
+  display_name      = "MySQL"
+  protocol          = "TCP"
+  destination_ports = ["3306"]
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+}
+
 
 # Create NSService for SSH, we will use it later in the fw section for some rules
 resource "nsxt_l4_port_set_ns_service" "ssh_l4" {
@@ -274,24 +427,75 @@ resource "nsxt_firewall_section" "firewall_section" {
 
 # Allow communication to my VMs only on the ports we defined earlier as NSService
   rule {
-    display_name = "Allow IN"
+    display_name = "Allow HTTPs"
     description  = "In going rule"
     action       = "ALLOW"
     logged       = false
     ip_protocol  = "IPV4"
     destination {
       target_type = "NSGroup"
-      target_id   = "${nsxt_ns_group.nsgroup.id}"
+      target_id   = "${nsxt_ns_group.webnsgroup.id}"
     }
     service {
       target_type = "NSService"
-      target_id   = "${nsxt_l4_port_set_ns_service.http_l4.id}"
+      target_id   = "${nsxt_l4_port_set_ns_service.web.id}"
+    }
+  }
+  rule {
+    display_name = "Allow SSH"
+    description  = "In going rule"
+    action       = "ALLOW"
+    logged       = false
+    ip_protocol  = "IPV4"
+    destination {
+      target_type = "NSGroup"
+      target_id   = "${nsxt_ns_group.webnsgroup.id}"
     }
     service {
       target_type = "NSService"
       target_id   = "${nsxt_l4_port_set_ns_service.ssh_l4.id}"
     }
   }
+  rule {
+    display_name = "Allow Web to App"
+    description  = "In going rule"
+    action       = "ALLOW"
+    logged       = false
+    ip_protocol  = "IPV4"
+    source {
+      target_type = "NSGroup"
+      target_id   = "${nsxt_ns_group.webnsgroup.id}"
+    }
+    destination {
+      target_type = "NSGroup"
+      target_id   = "${nsxt_ns_group.appnsgroup.id}"
+    }
+    service {
+      target_type = "NSService"
+      target_id   = "${nsxt_l4_port_set_ns_service.app.id}"
+    }
+  }
+  rule {
+    display_name = "Allow App to DB"
+    description  = "In going rule"
+    action       = "ALLOW"
+    logged       = false
+    ip_protocol  = "IPV4"
+    source {
+      target_type = "NSGroup"
+      target_id   = "${nsxt_ns_group.appnsgroup.id}"
+    }
+    destination {
+      target_type = "NSGroup"
+      target_id   = "${nsxt_ns_group.dbnsgroup.id}"
+    }
+    service {
+      target_type = "NSService"
+      target_id   = "${nsxt_l4_port_set_ns_service.mysql.id}"
+    }
+  }
+
+
 
 # Allow the ip addresses defined in the IP-SET to communicate to my VMs on all ports
   rule {
@@ -324,7 +528,7 @@ resource "nsxt_firewall_section" "firewall_section" {
 resource "nsxt_nat_rule" "rule1" {
   logical_router_id         = "${nsxt_logical_tier1_router.tier1_router.id}"
   description               = "1 to 1 NAT provisioned by Terraform"
-  display_name              = "1to1-in"
+  display_name              = "App 1to1-in"
   action                    = "SNAT"
   enabled                   = true
   logging                   = false
@@ -341,7 +545,7 @@ resource "nsxt_nat_rule" "rule1" {
 resource "nsxt_nat_rule" "rule2" {
   logical_router_id         = "${nsxt_logical_tier1_router.tier1_router.id}"
   description               = "1 to 1 NAT provisioned by Terraform"
-  display_name              = "1to1-out"
+  display_name              = "App 1to1-out"
   action                    = "DNAT"
   enabled                   = true
   logging                   = false
@@ -354,8 +558,41 @@ resource "nsxt_nat_rule" "rule2" {
     }
 }
 
-# Create SNAT rule to enable all VMs in my network to access outside
+# Create 1 to 1 NAT for outgoing traffic from one VM
 resource "nsxt_nat_rule" "rule3" {
+  logical_router_id         = "${nsxt_logical_tier1_router.tier1_router.id}"
+  description               = "1 to 1 NAT provisioned by Terraform"
+  display_name              = "App 1to1-in"
+  action                    = "SNAT"
+  enabled                   = true
+  logging                   = false
+  nat_pass                  = true
+  translated_network        = "10.29.15.228"
+  match_source_network      = "192.168.247.2/32"
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+}
+
+# Create 1 to 1 NAT for incomming traffic to one VM
+resource "nsxt_nat_rule" "rule4" {
+  logical_router_id         = "${nsxt_logical_tier1_router.tier1_router.id}"
+  description               = "1 to 1 NAT provisioned by Terraform"
+  display_name              = "App 1to1-out"
+  action                    = "DNAT"
+  enabled                   = true
+  logging                   = false
+  nat_pass                  = true
+  translated_network        = "192.168.247.2"
+  match_destination_network = "10.29.15.228/32"
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+}
+# Create SNAT rule to enable all VMs in my network to access outside
+resource "nsxt_nat_rule" "rule5" {
   logical_router_id         = "${nsxt_logical_tier1_router.tier1_router.id}"
   description               = "SNAT provisioned by Terraform"
   display_name              = "SNAT rule 1"
@@ -363,8 +600,8 @@ resource "nsxt_nat_rule" "rule3" {
   enabled                   = true
   logging                   = false
   nat_pass                  = true
-  translated_network        = "10.29.15.228"
-  match_source_network      = "192.168.245.0/24"
+  translated_network        = "10.29.15.230"
+  match_source_network      = "192.168.0.0/16"
     tag {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
@@ -387,11 +624,23 @@ data "vsphere_datacenter" "dc" {
 
 # Data source for the logical switch we created earlier
 # we need that as we cannot refer directly to the logical switch from the vm resource below
-data "vsphere_network" "terraform_switch1" {
-    name = "${nsxt_logical_switch.switch1.display_name}"
+data "vsphere_network" "terraform_web" {
+    name = "${nsxt_logical_switch.web.display_name}"
     datacenter_id = "${data.vsphere_datacenter.dc.id}"
-    depends_on = ["nsxt_logical_switch.switch1"]
+    depends_on = ["nsxt_logical_switch.web"]
 }
+data "vsphere_network" "terraform_app" {
+    name = "${nsxt_logical_switch.app.display_name}"
+    datacenter_id = "${data.vsphere_datacenter.dc.id}"
+    depends_on = ["nsxt_logical_switch.app"]
+}
+data "vsphere_network" "terraform_db" {
+    name = "${nsxt_logical_switch.db.display_name}"
+    datacenter_id = "${data.vsphere_datacenter.dc.id}"
+    depends_on = ["nsxt_logical_switch.db"]
+}
+
+
 
 # Datastore data source
 data "vsphere_datastore" "datastore" {
@@ -412,8 +661,8 @@ data "vsphere_virtual_machine" "template" {
 }
 
 # Clone a VM from the template above and attach it to the newly created logical switch
-resource "vsphere_virtual_machine" "vm" {
-    name             = "terraform-test1"
+resource "vsphere_virtual_machine" "appvm" {
+    name             = "tf-app"
     resource_pool_id = "${data.vsphere_resource_pool.pool.id}"
     datastore_id     = "${data.vsphere_datastore.datastore.id}"
     num_cpus = 1
@@ -422,10 +671,10 @@ resource "vsphere_virtual_machine" "vm" {
     scsi_type = "${data.vsphere_virtual_machine.template.scsi_type}"
     # Attach the VM to the network data source that refers to the newly created logical switch
     network_interface {
-      network_id = "${data.vsphere_network.terraform_switch1.id}"
+      network_id = "${data.vsphere_network.terraform_app.id}"
     }
     disk {
-	label = "terraform-test1.vmdk"
+	label = "tf-app.vmdk"
         size = 16
         thin_provisioned = true
     }
@@ -435,7 +684,7 @@ resource "vsphere_virtual_machine" "vm" {
 	# Guest customization to supply hostname and ip addresses to the guest
 	customize {
 	    linux_options {
-		host_name = "vm1"
+		host_name = "tfapp"
 		domain = "yasen.local"
 	    }
 	    network_interface {
@@ -465,7 +714,8 @@ resource "vsphere_virtual_machine" "vm" {
 	    "/usr/bin/systemctl stop firewalld",
 	    "/usr/bin/systemctl disable firewalld",
 	    "/usr/bin/yum makecache",
-	    "wget -P /opt/ https://github.com/yasensim/demo-three-tier-app/blob/master/nsxapp.tar.gz",
+	    "git clone https://github.com/yasensim/demo-three-tier-app.git",
+	    "cp demo-three-tier-app/nsxapp.tar.gz /opt/",
 	    "tar -xvzf /opt/nsxapp.tar.gz -C /opt/",
 	    "/usr/bin/yum install httpd -y",
 	    "if [ -r /etc/httpd/conf.d/ssl.conf ]; then mv /etc/httpd/conf.d/ssl.conf /etc/httpd/conf.d/ssl.conf.disabled ; fi",
@@ -514,9 +764,196 @@ resource "vsphere_virtual_machine" "vm" {
 # Tag the newly created VM, so it will becaome a member of my NSGroup
 # that way all fw rules we have defined earlier will be applied to it
 resource "nsxt_vm_tags" "vm1_tags" {
-    instance_id = "${vsphere_virtual_machine.vm.id}"
+    instance_id = "${vsphere_virtual_machine.appvm.id}"
     tag {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
+    }
+    tag {
+	scope = "tier"
+	tag = "app"
+    }
+}
+# Clone a VM from the template above and attach it to the newly created logical switch
+resource "vsphere_virtual_machine" "webvm" {
+    name             = "tf-web"
+    resource_pool_id = "${data.vsphere_resource_pool.pool.id}"
+    datastore_id     = "${data.vsphere_datastore.datastore.id}"
+    num_cpus = 1
+    memory   = 1024
+    guest_id = "${data.vsphere_virtual_machine.template.guest_id}"
+    scsi_type = "${data.vsphere_virtual_machine.template.scsi_type}"
+    # Attach the VM to the network data source that refers to the newly created logical switch
+    network_interface {
+      network_id = "${data.vsphere_network.terraform_web.id}"
+    }
+    disk {
+	label = "tf-web.vmdk"
+        size = 16
+        thin_provisioned = true
+    }
+    clone {
+	template_uuid = "${data.vsphere_virtual_machine.template.id}"
+
+	# Guest customization to supply hostname and ip addresses to the guest
+	customize {
+	    linux_options {
+		host_name = "tfweb"
+		domain = "yasen.local"
+	    }
+	    network_interface {
+		ipv4_address = "10.29.15.210"
+		ipv4_netmask = 28
+		dns_server_list = ["10.29.12.201", "8.8.8.8"]
+		dns_domain = "yasen.local"
+	    }
+	    ipv4_gateway = "10.29.15.209"
+	}
+    }
+    connection {
+	type = "ssh",
+	agent = "false"
+	# refer to the network interface if you have direct routing to this ip space
+	host = "10.29.15.210"
+	# refer to the network interface if you have direct routing to this ip space
+	user = "root"
+	password = "VMware1!"
+	script_path = "/root/tf.sh"
+    }
+    provisioner "remote-exec" {
+	inline = [ 
+	    "echo 'nameserver 10.29.12.201' >> /etc/resolv.conf", # By some reason guest customization didnt configure DNS, so this is a workaround
+	    "rm -f /etc/yum.repos.d/vmware-tools.repo",
+	    "/usr/bin/systemctl stop firewalld",
+	    "/usr/bin/systemctl disable firewalld",
+	    "/usr/bin/yum makecache",
+	    "/usr/bin/yum install epel-release -y",
+	    "/usr/bin/yum install nginx -y",
+	    "git clone https://github.com/yasensim/demo-three-tier-app.git",
+	    "cp demo-three-tier-app/nsxapp.tar.gz /opt/",
+	    "tar -xvzf /opt/nsxapp.tar.gz -C /opt/",
+	    "/bin/sed -i \"s/80 default_server/443 default_server/g\" /etc/nginx/nginx.conf",
+	    "/bin/sed -i 's/location \\//location \\/unuseful_location/g' /etc/nginx/nginx.conf",
+	    "/usr/bin/cp -a /opt/nsx/cert.pem /etc/ssl/cert.pem",
+	    "/usr/bin/cp -a /opt/nsx/cert.key /etc/ssl/cert.key",
+	    "/bin/sed -i 's/.*\\[::\\]/#&/g' /etc/nginx/nginx.conf",
+	    "/usr/bin/echo \"ssl on;\" > /etc/nginx/default.d/ssl.conf",
+	    "/usr/bin/echo \"ssl_certificate /etc/ssl/cert.pem;\" >> /etc/nginx/default.d/ssl.conf",
+	    "/usr/bin/echo \"ssl_certificate_key /etc/ssl/cert.key;\" >> /etc/nginx/default.d/ssl.conf",
+	    "/usr/bin/echo \"location / {\" >> /etc/nginx/default.d/ssl.conf",
+	    "/usr/bin/echo \"    proxy_pass https://192.168.245.2:${var.app_listen};\" >> /etc/nginx/default.d/ssl.conf",
+	    "/usr/bin/echo \"}\" >> /etc/nginx/default.d/ssl.conf",
+	    "/usr/bin/systemctl enable nginx.service",
+	    "/usr/bin/systemctl start nginx"
+	]
+    }
+}
+
+# Tag the newly created VM, so it will becaome a member of my NSGroup
+# that way all fw rules we have defined earlier will be applied to it
+resource "nsxt_vm_tags" "vm2_tags" {
+    instance_id = "${vsphere_virtual_machine.webvm.id}"
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+    tag {
+	scope = "tier"
+	tag = "web"
+    }
+}
+
+
+
+
+# Clone a VM from the template above and attach it to the newly created logical switch
+resource "vsphere_virtual_machine" "dbvm" {
+    name             = "tf-db"
+    resource_pool_id = "${data.vsphere_resource_pool.pool.id}"
+    datastore_id     = "${data.vsphere_datastore.datastore.id}"
+    num_cpus = 1
+    memory   = 1024
+    guest_id = "${data.vsphere_virtual_machine.template.guest_id}"
+    scsi_type = "${data.vsphere_virtual_machine.template.scsi_type}"
+    # Attach the VM to the network data source that refers to the newly created logical switch
+    network_interface {
+      network_id = "${data.vsphere_network.terraform_db.id}"
+    }
+    disk {
+	label = "tf-db.vmdk"
+        size = 16
+        thin_provisioned = true
+    }
+    clone {
+	template_uuid = "${data.vsphere_virtual_machine.template.id}"
+
+	# Guest customization to supply hostname and ip addresses to the guest
+	customize {
+	    linux_options {
+		host_name = "tfdb"
+		domain = "yasen.local"
+	    }
+	    network_interface {
+		ipv4_address = "192.168.247.2"
+		ipv4_netmask = 24
+		dns_server_list = ["10.29.12.201", "8.8.8.8"]
+		dns_domain = "yasen.local"
+	    }
+	    ipv4_gateway = "192.168.247.1"
+	}
+    }
+    connection {
+	type = "ssh",
+	agent = "false"
+	# refer to the network interface if you have direct routing to this ip space
+	#host = "${vsphere_virtual_machine.vm.network_interface.0.ipv4_address}"
+	# refer to the network interface if you have direct routing to this ip space
+	host = "10.29.15.228"
+	user = "root"
+	password = "VMware1!"
+	script_path = "/root/tf.sh"
+    }
+    provisioner "remote-exec" {
+	inline = [ 
+	    "echo 'nameserver 10.29.12.201' >> /etc/resolv.conf", # By some reason guest customization didnt configure DNS, so this is a workaround
+	    "rm -f /etc/yum.repos.d/vmware-tools.repo",
+	    "/usr/bin/systemctl stop firewalld",
+	    "/usr/bin/systemctl disable firewalld",
+	    "/usr/bin/yum makecache",
+	    "git clone https://github.com/yasensim/demo-three-tier-app.git",
+	    "cp demo-three-tier-app/nsxapp.tar.gz /opt/",
+	    "tar -xvzf /opt/nsxapp.tar.gz -C /opt/",
+	    "/usr/bin/yum install mariadb-server -y",
+	    "/sbin/chkconfig mariadb on",
+	    "/sbin/service mariadb start",
+	    "/bin/echo '[mysqld]' > /etc/my.cnf.d/skipdns.cnf",
+	    "/bin/echo 'skip-name-resolve' >> /etc/my.cnf.d/skipdns.cnf",
+	    "/usr/bin/mysql -e \"UPDATE mysql.user SET Password=PASSWORD('${var.db_pass}') WHERE User='root';\"",
+	    "/usr/bin/mysql -e \"DELETE FROM mysql.user WHERE User='';\"",
+	    "/usr/bin/mysql -e \"DROP DATABASE test;\"",
+	    "/usr/bin/mysql -e \"FLUSH PRIVILEGES;\"",
+	    "/bin/systemctl restart mariadb.service",
+	    "/usr/bin/mysql -e 'CREATE DATABASE ${var.db_name};' --user=root --password=${var.db_pass}",
+	    "/usr/bin/mysql -e \"CREATE USER '${var.db_user}'@'%';\" --user=root --password=${var.db_pass}",
+	    "/usr/bin/mysql -e \"SET PASSWORD FOR '${var.db_user}'@'%'=PASSWORD('${var.db_pass}');\" --user=root --password=${var.db_pass}",
+	    "/usr/bin/mysql -e \"GRANT ALL PRIVILEGES ON ${var.db_name}.* TO '${var.db_user}'@'%'IDENTIFIED BY '${var.db_pass}';\" --user=root --password=${var.db_pass}",
+	    "/usr/bin/mysql -e \"FLUSH PRIVILEGES;\" --user=root --password=${var.db_pass}",
+	    "/usr/bin/mysql --user=${var.db_user} --password=${var.db_pass} < /opt/nsx/medicalapp.sql ${var.db_name}"
+	]
+    }
+
+}
+
+# Tag the newly created VM, so it will becaome a member of my NSGroup
+# that way all fw rules we have defined earlier will be applied to it
+resource "nsxt_vm_tags" "vm3_tags" {
+    instance_id = "${vsphere_virtual_machine.dbvm.id}"
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+    tag {
+	scope = "tier"
+	tag = "db"
     }
 }
