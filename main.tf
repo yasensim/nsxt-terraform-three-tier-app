@@ -79,9 +79,6 @@ resource "nsxt_logical_switch" "switch1" {
 	scope = "tenant"
 	tag = "second_example_tag"
     }
-    provisioner "local-exec" { # WORKAROUND FOR A KNOWN ISSUE. WILL BE FIXED IN NEXT NSX RELEASE
-	command = "sleep 10"
-    }
 }
 
 # Create T1 router
@@ -410,7 +407,7 @@ data "vsphere_resource_pool" "pool" {
 
 # Data source for the template I am going to use to clone my VM from
 data "vsphere_virtual_machine" "template" {
-    name = "t_centos"
+    name = "t_template_novra"
     datacenter_id = "${data.vsphere_datacenter.dc.id}"
 }
 
@@ -463,9 +460,13 @@ resource "vsphere_virtual_machine" "vm" {
     }
     provisioner "remote-exec" {
 	inline = [ 
+	    "echo 'nameserver 10.29.12.201' >> /etc/resolv.conf", # By some reason guest customization didnt configure DNS, so this is a workaround
+	    "rm -f /etc/yum.repos.d/vmware-tools.repo",
 	    "/usr/bin/systemctl stop firewalld",
 	    "/usr/bin/systemctl disable firewalld",
 	    "/usr/bin/yum makecache",
+	    "wget -P /opt/ https://github.com/yasensim/demo-three-tier-app/blob/master/nsxapp.tar.gz",
+	    "tar -xvzf /opt/nsxapp.tar.gz -C /opt/",
 	    "/usr/bin/yum install httpd -y",
 	    "if [ -r /etc/httpd/conf.d/ssl.conf ]; then mv /etc/httpd/conf.d/ssl.conf /etc/httpd/conf.d/ssl.conf.disabled ; fi",
 	    "/usr/bin/systemctl enable httpd.service",
