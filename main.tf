@@ -411,19 +411,6 @@ resource "nsxt_firewall_section" "firewall_section" {
   section_type = "LAYER3"
   stateful     = true
 
-# Allow all communication from my VMs to everywhere
-  rule {
-    display_name = "Allow out"
-    description  = "Out going rule"
-    action       = "ALLOW"
-    logged       = false
-    ip_protocol  = "IPV4"
-
-    source {
-      target_type = "NSGroup"
-      target_id   = "${nsxt_ns_group.nsgroup.id}"
-    }
-  }
 
 # Allow communication to my VMs only on the ports we defined earlier as NSService
   rule {
@@ -449,7 +436,8 @@ resource "nsxt_firewall_section" "firewall_section" {
     ip_protocol  = "IPV4"
     destination {
       target_type = "NSGroup"
-      target_id   = "${nsxt_ns_group.webnsgroup.id}"
+      target_id   = "${nsxt_ns_group.nsgroup.id}"
+#      target_id   = "${nsxt_ns_group.webnsgroup.id}"
     }
     service {
       target_type = "NSService"
@@ -509,6 +497,19 @@ resource "nsxt_firewall_section" "firewall_section" {
       target_id   = "${nsxt_ip_set.ip_set.id}"
     }
     destination {
+      target_type = "NSGroup"
+      target_id   = "${nsxt_ns_group.nsgroup.id}"
+    }
+  }
+# Allow all communication from my VMs to everywhere
+  rule {
+    display_name = "Allow out"
+    description  = "Out going rule"
+    action       = "ALLOW"
+    logged       = false
+    ip_protocol  = "IPV4"
+
+    source {
       target_type = "NSGroup"
       target_id   = "${nsxt_ns_group.nsgroup.id}"
     }
