@@ -114,14 +114,11 @@ resource "nsxt_logical_switch" "db" {
 }
 
 
-
-
 # Create T1 router
 resource "nsxt_logical_tier1_router" "tier1_router" {
   description                 = "Tier1 router provisioned by Terraform"
   display_name                = "${var.nsx_t1_router_name}"
   failover_mode               = "PREEMPTIVE"
-  high_availability_mode      = "ACTIVE_STANDBY"
   edge_cluster_id             = "${data.nsxt_edge_cluster.edge_cluster1.id}"
   enable_router_advertisement = true
   advertise_connected_routes  = true
@@ -334,7 +331,7 @@ resource "nsxt_ns_group" "dbnsgroup" {
     }
 }
 
-# Create NSService for App service that listens on port 8443
+# Create custom NSService for App service that listens on port 8443
 resource "nsxt_l4_port_set_ns_service" "app" {
   description       = "L4 Port range provisioned by Terraform"
   display_name      = "App Service"
@@ -345,41 +342,18 @@ resource "nsxt_l4_port_set_ns_service" "app" {
 	tag = "${var.nsx_tag}"
     }
 }
-# Create NSService for multiple ports, we will use it later in the fw section for some rules
-resource "nsxt_l4_port_set_ns_service" "web" {
-  description       = "L4 Port range provisioned by Terraform"
-  display_name      = "HTTP"
-  protocol          = "TCP"
-  destination_ports = ["443", "80"]
-    tag {
-	scope = "${var.nsx_tag_scope}"
-	tag = "${var.nsx_tag}"
-    }
+
+# Create data sourcees for some NSServices that we need to rceate FW rules
+data "nsxt_ns_service" "https" {
+  display_name = "HTTPS"
 }
 
-# Create NSService for MySQL
-resource "nsxt_l4_port_set_ns_service" "mysql" {
-  description       = "L4 Port range provisioned by Terraform"
-  display_name      = "MySQL"
-  protocol          = "TCP"
-  destination_ports = ["3306"]
-    tag {
-	scope = "${var.nsx_tag_scope}"
-	tag = "${var.nsx_tag}"
-    }
+data "nsxt_ns_service" "mysql" {
+  display_name = "MySQL"
 }
 
-
-# Create NSService for SSH, we will use it later in the fw section for some rules
-resource "nsxt_l4_port_set_ns_service" "ssh_l4" {
-  description       = "L4 Port range provisioned by Terraform"
-  display_name      = "SSH"
-  protocol          = "TCP"
-  destination_ports = ["22"]
-    tag {
-	scope = "${var.nsx_tag_scope}"
-	tag = "${var.nsx_tag}"
-    }
+data "nsxt_ns_service" "ssh" {
+  display_name = "SSH"
 }
 
 # Create IP-SET with some ip addresses
@@ -425,7 +399,7 @@ resource "nsxt_firewall_section" "firewall_section" {
     }
     service {
       target_type = "NSService"
-      target_id   = "${nsxt_l4_port_set_ns_service.web.id}"
+      target_id   = "${data.nsxt_ns_service.https.id}"
     }
   }
   rule {
@@ -441,7 +415,7 @@ resource "nsxt_firewall_section" "firewall_section" {
     }
     service {
       target_type = "NSService"
-      target_id   = "${nsxt_l4_port_set_ns_service.ssh_l4.id}"
+      target_id   = "${data.nsxt_ns_service.ssh.id}"
     }
   }
   rule {
@@ -479,11 +453,9 @@ resource "nsxt_firewall_section" "firewall_section" {
     }
     service {
       target_type = "NSService"
-      target_id   = "${nsxt_l4_port_set_ns_service.mysql.id}"
+      target_id   = "${data.nsxt_ns_service.mysql.id}"
     }
   }
-
-
 
 # Allow the ip addresses defined in the IP-SET to communicate to my VMs on all ports
   rule {
@@ -501,6 +473,7 @@ resource "nsxt_firewall_section" "firewall_section" {
       target_id   = "${nsxt_ns_group.nsgroup.id}"
     }
   }
+  
 # Allow all communication from my VMs to everywhere
   rule {
     display_name = "Allow out"
@@ -664,6 +637,7 @@ data "vsphere_virtual_machine" "template" {
 # Clone a VM from the template above and attach it to the newly created logical switch
 resource "vsphere_virtual_machine" "appvm" {
     name             = "tf-app"
+    depends_on = ["nsxt_logical_switch.app"]
     resource_pool_id = "${data.vsphere_resource_pool.pool.id}"
     datastore_id     = "${data.vsphere_datastore.datastore.id}"
     num_cpus = 1
@@ -778,6 +752,7 @@ resource "nsxt_vm_tags" "vm1_tags" {
 # Clone a VM from the template above and attach it to the newly created logical switch
 resource "vsphere_virtual_machine" "webvm" {
     name             = "tf-web"
+    depends_on = ["nsxt_logical_switch.web"]
     resource_pool_id = "${data.vsphere_resource_pool.pool.id}"
     datastore_id     = "${data.vsphere_datastore.datastore.id}"
     num_cpus = 1
@@ -870,6 +845,7 @@ resource "nsxt_vm_tags" "vm2_tags" {
 # Clone a VM from the template above and attach it to the newly created logical switch
 resource "vsphere_virtual_machine" "dbvm" {
     name             = "tf-db"
+    depends_on = ["nsxt_logical_switch.db"]
     resource_pool_id = "${data.vsphere_resource_pool.pool.id}"
     datastore_id     = "${data.vsphere_datastore.datastore.id}"
     num_cpus = 1
