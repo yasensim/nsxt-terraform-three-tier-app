@@ -1,64 +1,20 @@
-# configure some variables first 
-variable "nsx_ip" {
-    default = "10.29.15.73"
-}
-variable "nsx_password" {
-    default = "VMware1!"
-}
-
-variable "nsx_tag_scope" {
-    default = "project"
-}
-variable "nsx_tag" {
-    default = "terraform-demo"
-}
-variable "nsx_t1_router_name" {
-    default = "terraform-demo-router"
-}
-variable "vsphere_user" {
-    default = "administrator@yasen.local"
-}
-variable "vsphere_password" {
-    default = "VMware1!"
-}
-variable "vsphere_ip" {
-    default = "10.29.15.69"
-}
-
-variable "db_user" {
-    default = "medicalappuser"
-}
-variable "db_name" {
-    default = "medicalapp"
-}
-variable "app_listen" {
-    default = "8443"
-}
-variable "db_pass" {
-    default = "VMware1!"
-}
-variable "db_host" {
-    default = "192.168.247.2"
-}
-
-
 # Configure the VMware NSX-T Provider
 provider "nsxt" {
-    host = "${var.nsx_ip}"
-    username = "admin"
-    password = "${var.nsx_password}"
+    host = "${var.nsx["ip"]}"
+    username = "${var.nsx["user"]}"
+    password = "${var.nsx["password"]}"
     allow_unverified_ssl = true
 }
 
 # Create the data sources we will need to refer to later
 data "nsxt_transport_zone" "overlay_tz" {
-    display_name = "tz1"
+    display_name = "${var.nsx_data_vars["transport_zone"]}"
 }
 data "nsxt_logical_tier0_router" "tier0_router" {
-  display_name = "DefaultT0Router"
+  display_name = "${var.nsx_data_vars["t0_router_name"]}"
 }
 data "nsxt_edge_cluster" "edge_cluster1" {
-    display_name = "EdgeCluster1"
+    display_name = "${var.nsx_data_vars["edge_cluster"]}"
 }
 
 # Create Web Tier NSX-T Logical Switch
@@ -117,7 +73,7 @@ resource "nsxt_logical_switch" "db" {
 # Create T1 router
 resource "nsxt_logical_tier1_router" "tier1_router" {
   description                 = "Tier1 router provisioned by Terraform"
-  display_name                = "${var.nsx_t1_router_name}"
+  display_name                = "${var.nsx_rs_vars["t1_router_name"]}"
   failover_mode               = "PREEMPTIVE"
   edge_cluster_id             = "${data.nsxt_edge_cluster.edge_cluster1.id}"
   enable_router_advertisement = true
@@ -165,56 +121,13 @@ resource "nsxt_logical_port" "logical_port1" {
     }
 }
 
-# Create DHCP RELAY PROFILE
-resource "nsxt_dhcp_relay_profile" "dr_profile" {
-  description  = "DHCP Relay Profile provisioned by Terraform"
-  display_name = "DHCPRelayProfile1"
-    tag {
-	scope = "${var.nsx_tag_scope}"
-	tag = "${var.nsx_tag}"
-    }
-  server_addresses = ["1.1.1.1"]
-}
-
-# Create DHCP RELAY SERVICE based on the profile above
-resource "nsxt_dhcp_relay_service" "dr_service" {
-  display_name          = "DHCPRelayService"
-  dhcp_relay_profile_id = "${nsxt_dhcp_relay_profile.dr_profile.id}"
-    tag {
-	scope = "${var.nsx_tag_scope}"
-	tag = "${var.nsx_tag}"
-    }
-}
-
 # Create downlink port on the T1 router and connect it to the switchport we created earlier
-# as well as to the DHCP relay service
 resource "nsxt_logical_router_downlink_port" "downlink_port" {
   description                   = "DP1 provisioned by Terraform"
   display_name                  = "DP1"
   logical_router_id             = "${nsxt_logical_tier1_router.tier1_router.id}"
   linked_logical_switch_port_id = "${nsxt_logical_port.logical_port1.id}"
   ip_address                    = "192.168.245.1/24"
-  service_binding {
-    target_id   = "${nsxt_dhcp_relay_service.dr_service.id}"
-    target_type = "LogicalService"
-  }
-    tag {
-	scope = "${var.nsx_tag_scope}"
-	tag = "${var.nsx_tag}"
-    }
-}
-
-# Althought we dont need it at the moment we create a static route on the T0
-resource "nsxt_static_route" "static_route" {
-  description       = "SR provisioned by Terraform"
-  display_name      = "SR"
-  logical_router_id = "${nsxt_logical_tier1_router.tier1_router.id}"
-  network           = "4.4.4.0/24"
-  next_hop {
-    ip_address              = "192.168.245.100"
-    administrative_distance = "1" 
-    logical_router_port_id  = "${nsxt_logical_router_downlink_port.downlink_port.id}"
-  }
     tag {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
@@ -336,14 +249,14 @@ resource "nsxt_l4_port_set_ns_service" "app" {
   description       = "L4 Port range provisioned by Terraform"
   display_name      = "App Service"
   protocol          = "TCP"
-  destination_ports = ["8443"]
+  destination_ports = ["${var.app_listen_port}"]
     tag {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
     }
 }
 
-# Create data sourcees for some NSServices that we need to rceate FW rules
+# Create data sourcees for some NSServices that we need to create FW rules
 data "nsxt_ns_service" "https" {
   display_name = "HTTPS"
 }
@@ -365,7 +278,7 @@ resource "nsxt_ip_set" "ip_set" {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
     }
-  ip_addresses = ["10.19.12.201", "10.29.12.219", "10.29.12.220"]
+  ip_addresses = "${var.ipset}"
 }
 
 # Create a Firewall Section
@@ -498,42 +411,45 @@ resource "nsxt_firewall_section" "firewall_section" {
   }
 }
 
-# Create 1 to 1 NAT for outgoing traffic from one VM
+# Create 1 to 1 NAT for Web VM
 resource "nsxt_nat_rule" "rule1" {
+  count = "${var.web["nat_ip"] != "" ? 1 : 0}"
   logical_router_id         = "${nsxt_logical_tier1_router.tier1_router.id}"
   description               = "1 to 1 NAT provisioned by Terraform"
-  display_name              = "App 1to1-in"
+  display_name              = "Web 1to1-in"
   action                    = "SNAT"
   enabled                   = true
   logging                   = false
   nat_pass                  = true
-  translated_network        = "10.29.15.229"
-  match_source_network      = "192.168.245.2/32"
+  translated_network        =  "${var.web["nat_ip"]}"
+  match_source_network = "${var.web["ip"]}/32"
     tag {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
     }
 }
 
-# Create 1 to 1 NAT for incomming traffic to one VM
 resource "nsxt_nat_rule" "rule2" {
+  count = "${var.web["nat_ip"] != "" ? 1 : 0}"
   logical_router_id         = "${nsxt_logical_tier1_router.tier1_router.id}"
   description               = "1 to 1 NAT provisioned by Terraform"
-  display_name              = "App 1to1-out"
+  display_name              = "Web 1to1-out"
   action                    = "DNAT"
   enabled                   = true
   logging                   = false
   nat_pass                  = true
-  translated_network        = "192.168.245.2"
-  match_destination_network = "10.29.15.229/32"
+  translated_network        = "${var.web["ip"]}"
+  match_destination_network = "${var.web["nat_ip"]}/32"
     tag {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
     }
 }
 
-# Create 1 to 1 NAT for outgoing traffic from one VM
+
+# Create 1 to 1 NAT for App VM
 resource "nsxt_nat_rule" "rule3" {
+  count = "${var.app["nat_ip"] != "" ? 1 : 0}"
   logical_router_id         = "${nsxt_logical_tier1_router.tier1_router.id}"
   description               = "1 to 1 NAT provisioned by Terraform"
   display_name              = "App 1to1-in"
@@ -541,16 +457,16 @@ resource "nsxt_nat_rule" "rule3" {
   enabled                   = true
   logging                   = false
   nat_pass                  = true
-  translated_network        = "10.29.15.228"
-  match_source_network      = "192.168.247.2/32"
+  translated_network        =  "${var.app["nat_ip"]}"
+  match_source_network = "${var.app["ip"]}/32"
     tag {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
     }
 }
 
-# Create 1 to 1 NAT for incomming traffic to one VM
 resource "nsxt_nat_rule" "rule4" {
+  count = "${var.app["nat_ip"] != "" ? 1 : 0}"
   logical_router_id         = "${nsxt_logical_tier1_router.tier1_router.id}"
   description               = "1 to 1 NAT provisioned by Terraform"
   display_name              = "App 1to1-out"
@@ -558,42 +474,62 @@ resource "nsxt_nat_rule" "rule4" {
   enabled                   = true
   logging                   = false
   nat_pass                  = true
-  translated_network        = "192.168.247.2"
-  match_destination_network = "10.29.15.228/32"
+  translated_network        = "${var.app["ip"]}"
+  match_destination_network = "${var.app["nat_ip"]}/32"
     tag {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
     }
 }
-# Create SNAT rule to enable all VMs in my network to access outside
+
+# Create 1 to 1 NAT for DB VM
 resource "nsxt_nat_rule" "rule5" {
+  count = "${var.db["nat_ip"] != "" ? 1 : 0}"
   logical_router_id         = "${nsxt_logical_tier1_router.tier1_router.id}"
-  description               = "SNAT provisioned by Terraform"
-  display_name              = "SNAT rule 1"
+  description               = "1 to 1 NAT provisioned by Terraform"
+  display_name              = "DB 1to1-in"
   action                    = "SNAT"
   enabled                   = true
   logging                   = false
   nat_pass                  = true
-  translated_network        = "10.29.15.230"
-  match_source_network      = "192.168.0.0/16"
+  translated_network        =  "${var.db["nat_ip"]}"
+  match_source_network      = "${var.db["ip"]}/32"
     tag {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
     }
 }
+
+resource "nsxt_nat_rule" "rule6" {
+  count = "${var.db["nat_ip"] != "" ? 1 : 0}"
+  logical_router_id         = "${nsxt_logical_tier1_router.tier1_router.id}"
+  description               = "1 to 1 NAT provisioned by Terraform"
+  display_name              = "DB 1to1-out"
+  action                    = "DNAT"
+  enabled                   = true
+  logging                   = false
+  nat_pass                  = true
+  translated_network        = "${var.db["ip"]}"
+  match_destination_network = "${var.db["nat_ip"]}/32"
+    tag {
+	scope = "${var.nsx_tag_scope}"
+	tag = "${var.nsx_tag}"
+    }
+}
+
 
 
 # Configure the VMware vSphere Provider
 provider "vsphere" {
-    user           = "${var.vsphere_user}"
-    password       = "${var.vsphere_password}"
-    vsphere_server = "${var.vsphere_ip}"
+    user           = "${var.vsphere["vsphere_user"]}"
+    password       = "${var.vsphere["vsphere_password"]}"
+    vsphere_server = "${var.vsphere["vsphere_ip"]}"
     allow_unverified_ssl = true
 }
 
 # data source for my vSphere Data Center
 data "vsphere_datacenter" "dc" {
-  name = "MyDC1"
+  name = "${var.vsphere["dc"]}"
 }
 
 # Data source for the logical switch we created earlier
@@ -618,25 +554,25 @@ data "vsphere_network" "terraform_db" {
 
 # Datastore data source
 data "vsphere_datastore" "datastore" {
-  name          = "NFS"
+  name          = "${var.vsphere["datastore"]}"
   datacenter_id = "${data.vsphere_datacenter.dc.id}"
 }
 
 # data source for my cluster's default resource pool
 data "vsphere_resource_pool" "pool" {
-  name          = "T_Cluster/Resources"
+  name          = "${var.vsphere["resource_pool"]}"
   datacenter_id = "${data.vsphere_datacenter.dc.id}"
 }
 
 # Data source for the template I am going to use to clone my VM from
 data "vsphere_virtual_machine" "template" {
-    name = "t_template_novra"
+    name = "${var.vsphere["vm_template"]}"
     datacenter_id = "${data.vsphere_datacenter.dc.id}"
 }
 
 # Clone a VM from the template above and attach it to the newly created logical switch
 resource "vsphere_virtual_machine" "appvm" {
-    name             = "tf-app"
+    name             = "${var.app["vm_name"]}"
     depends_on = ["nsxt_logical_switch.app"]
     resource_pool_id = "${data.vsphere_resource_pool.pool.id}"
     datastore_id     = "${data.vsphere_datastore.datastore.id}"
@@ -649,7 +585,7 @@ resource "vsphere_virtual_machine" "appvm" {
       network_id = "${data.vsphere_network.terraform_app.id}"
     }
     disk {
-	label = "tf-app.vmdk"
+	label = "${var.app["vm_name"]}.vmdk"
         size = 16
         thin_provisioned = true
     }
@@ -659,32 +595,29 @@ resource "vsphere_virtual_machine" "appvm" {
 	# Guest customization to supply hostname and ip addresses to the guest
 	customize {
 	    linux_options {
-		host_name = "tfapp"
-		domain = "yasen.local"
+		host_name = "${var.app["vm_name"]}"
+		domain = "${var.app["domain"]}"
 	    }
 	    network_interface {
-		ipv4_address = "192.168.245.2"
-		ipv4_netmask = 24
-		dns_server_list = ["10.29.12.201", "8.8.8.8"]
-		dns_domain = "yasen.local"
+		ipv4_address = "${var.app["ip"]}"
+		ipv4_netmask = "${var.app["mask"]}"
+		dns_server_list = "${var.dns_server_list}"
+		dns_domain = "${var.app["domain"]}"
 	    }
-	    ipv4_gateway = "192.168.245.1"
+	    ipv4_gateway = "${var.app["gw"]}"
 	}
     }
     connection {
 	type = "ssh",
 	agent = "false"
-	# refer to the network interface if you have direct routing to this ip space
-	#host = "${vsphere_virtual_machine.vm.network_interface.0.ipv4_address}"
-	# refer to the network interface if you have direct routing to this ip space
-	host = "10.29.15.229"
-	user = "root"
-	password = "VMware1!"
+	host = "${var.app["nat_ip"] != "" ? var.app["nat_ip"] : var.app["ip"]}"
+	user = "${var.app["user"]}"
+	password = "${var.app["pass"]}"
 	script_path = "/root/tf.sh"
     }
     provisioner "remote-exec" {
-	inline = [ 
-	    "echo 'nameserver 10.29.12.201' >> /etc/resolv.conf", # By some reason guest customization didnt configure DNS, so this is a workaround
+	inline = [
+	    "echo 'nameserver ${var.dns_server_list[0]}' >> /etc/resolv.conf", # By some reason guest customization didnt configure DNS, so this is a workaround
 	    "rm -f /etc/yum.repos.d/vmware-tools.repo",
 	    "/usr/bin/systemctl stop firewalld",
 	    "/usr/bin/systemctl disable firewalld",
@@ -710,17 +643,17 @@ resource "vsphere_virtual_machine" "appvm" {
 	    # app configuration
 	    "/bin/sed -i 's/MEDAPP_DB_USER/${var.db_user}/g' /var/www/html2/index.php",
 	    "/bin/sed -i 's/MEDAPP_DB_PASS/${var.db_pass}/g' /var/www/html2/index.php",
-	    "/bin/sed -i 's/MEDAPP_DB_HOST/${var.db_host}/g' /var/www/html2/index.php",
+	    "/bin/sed -i 's/MEDAPP_DB_HOST/${var.db["ip"]}/g' /var/www/html2/index.php",
 	    "/bin/sed -i 's/MEDAPP_DB_NAME/${var.db_name}/g' /var/www/html2/index.php",
 	    
 	    # httpd configuration
-	    "/usr/bin/echo 'ServerName appserver.corp.local' > /etc/httpd/conf.d/ssl.conf",
-	    "/usr/bin/echo 'Listen ${var.app_listen}' >> /etc/httpd/conf.d/ssl.conf",
+	    "/usr/bin/echo 'ServerName appserver.yasen.local' > /etc/httpd/conf.d/ssl.conf",
+	    "/usr/bin/echo 'Listen 8443' >> /etc/httpd/conf.d/ssl.conf",
 	    "/usr/bin/echo '' >> /etc/httpd/conf.d/ssl.conf",
 	    "/usr/bin/echo 'SSLCertificateFile /etc/ssl/cert.pem' >> /etc/httpd/conf.d/ssl.conf",
 	    "/usr/bin/echo 'SSLCertificateKeyFile /etc/ssl/cert.key' >> /etc/httpd/conf.d/ssl.conf",
 	    "/usr/bin/echo '' >> /etc/httpd/conf.d/ssl.conf",
-	    "/usr/bin/echo '<VirtualHost _default_:${var.app_listen}>' >> /etc/httpd/conf.d/ssl.conf",
+	    "/usr/bin/echo '<VirtualHost _default_:${var.app_listen_port}>' >> /etc/httpd/conf.d/ssl.conf",
 	    "/usr/bin/echo '  SSLEngine on' >> /etc/httpd/conf.d/ssl.conf",
 	    "/usr/bin/echo '  DocumentRoot \"/var/www/html2\"' >> /etc/httpd/conf.d/ssl.conf",
 	    "/usr/bin/echo '  <Directory \"/var/www/html\">' >> /etc/httpd/conf.d/ssl.conf",
@@ -730,7 +663,7 @@ resource "vsphere_virtual_machine" "appvm" {
 	    "/usr/bin/echo '  </Directory>' >> /etc/httpd/conf.d/ssl.conf",
 	    "/usr/bin/echo '</VirtualHost>' >> /etc/httpd/conf.d/ssl.conf",
 	    "/usr/bin/systemctl stop httpd",
-	    "/usr/bin/systemctl start httpd"
+	    "/usr/bin/systemctl start httpd" 
 	]
     }
 
@@ -751,7 +684,7 @@ resource "nsxt_vm_tags" "vm1_tags" {
 }
 # Clone a VM from the template above and attach it to the newly created logical switch
 resource "vsphere_virtual_machine" "webvm" {
-    name             = "tf-web"
+    name             = "${var.web["vm_name"]}"
     depends_on = ["nsxt_logical_switch.web"]
     resource_pool_id = "${data.vsphere_resource_pool.pool.id}"
     datastore_id     = "${data.vsphere_datastore.datastore.id}"
@@ -817,7 +750,7 @@ resource "vsphere_virtual_machine" "webvm" {
 	    "/usr/bin/echo \"ssl_certificate /etc/ssl/cert.pem;\" >> /etc/nginx/default.d/ssl.conf",
 	    "/usr/bin/echo \"ssl_certificate_key /etc/ssl/cert.key;\" >> /etc/nginx/default.d/ssl.conf",
 	    "/usr/bin/echo \"location / {\" >> /etc/nginx/default.d/ssl.conf",
-	    "/usr/bin/echo \"    proxy_pass https://192.168.245.2:${var.app_listen};\" >> /etc/nginx/default.d/ssl.conf",
+	    "/usr/bin/echo \"    proxy_pass https://192.168.245.2:8443;\" >> /etc/nginx/default.d/ssl.conf",
 	    "/usr/bin/echo \"}\" >> /etc/nginx/default.d/ssl.conf",
 	    "/usr/bin/systemctl enable nginx.service",
 	    "/usr/bin/systemctl start nginx"
