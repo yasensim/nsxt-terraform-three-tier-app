@@ -43,35 +43,32 @@ web = {
     ip = "10.29.15.210"
     gw = "10.29.15.209"
     mask = "28"
-    nat_ip = ""
+    nat_ip = "" # If the ip above is routable and has internet access you can leave the NAT IP blank
     vm_name = "web"
     domain = "yasen.local"
-    connect_to = "10.29.15.210" # If configure_nat is True this must be the same value as nat_ip, otherwise it must be the same value as ip
     user = "root" # Credentails to access the VM
     pass = "VMware1!"
 }
 
 app = {
-    ip = "192.168.245.2"
+    ip = "192.168.245.21" # If this IP is not routable and has no internet access you need to condigure a NAT IP below
     gw = "192.168.245.1"
     mask = "24"
     nat_ip = "10.29.15.229"
     vm_name = "app"
     domain = "yasen.local"
-    connect_to = "10.29.15.229"
     user = "root"
     pass = "VMware1!"
 }
 
 db = {
-    ip = "192.168.247.2"
+    ip = "192.168.247.21"
     gw = "192.168.247.1"
     mask = "24"
-    nat_ip = "10.29.15.228" # if configure_nat = False you still need to put something here but it will be ignored
+    nat_ip = "10.29.15.228"
     vm_name = "db"
     domain = "yasen.local"
-    connect_to = "10.29.15.228" # If configure_nat is True this must be the same value as nat_ip, otherwise it must be the same value as ip
-    user = "root" # Credentails to access the VM
+    user = "root"
     pass = "VMware1!"
 }
 

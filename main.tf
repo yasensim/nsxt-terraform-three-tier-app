@@ -121,13 +121,13 @@ resource "nsxt_logical_port" "logical_port1" {
     }
 }
 
-# Create downlink port on the T1 router and connect it to the switchport we created earlier
+# Create downlink port on the T1 router and connect it to the switchport we created earlier for App Tier
 resource "nsxt_logical_router_downlink_port" "downlink_port" {
   description                   = "DP1 provisioned by Terraform"
   display_name                  = "DP1"
   logical_router_id             = "${nsxt_logical_tier1_router.tier1_router.id}"
   linked_logical_switch_port_id = "${nsxt_logical_port.logical_port1.id}"
-  ip_address                    = "192.168.245.1/24"
+  ip_address                    = "${var.app["gw"]}/${var.app["mask"]}"
     tag {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
@@ -152,7 +152,7 @@ resource "nsxt_logical_router_downlink_port" "downlink_port2" {
   display_name                  = "DP2"
   logical_router_id             = "${nsxt_logical_tier1_router.tier1_router.id}"
   linked_logical_switch_port_id = "${nsxt_logical_port.logical_port2.id}"
-  ip_address                    = "10.29.15.209/28"
+  ip_address                    = "${var.web["gw"]}/${var.web["mask"]}"
     tag {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
@@ -177,7 +177,7 @@ resource "nsxt_logical_router_downlink_port" "downlink_port3" {
   display_name                  = "DP3"
   logical_router_id             = "${nsxt_logical_tier1_router.tier1_router.id}"
   linked_logical_switch_port_id = "${nsxt_logical_port.logical_port3.id}"
-  ip_address                    = "192.168.247.1/24"
+  ip_address                    = "${var.db["gw"]}/${var.db["mask"]}"
     tag {
 	scope = "${var.nsx_tag_scope}"
 	tag = "${var.nsx_tag}"
@@ -775,7 +775,7 @@ resource "nsxt_vm_tags" "vm2_tags" {
 
 # Clone a VM from the template above and attach it to the newly created logical switch
 resource "vsphere_virtual_machine" "dbvm" {
-    name             = "tf-db"
+    name             = "${var.db["vm_name"]}"
     depends_on = ["nsxt_logical_switch.db"]
     resource_pool_id = "${data.vsphere_resource_pool.pool.id}"
     datastore_id     = "${data.vsphere_datastore.datastore.id}"
@@ -788,7 +788,7 @@ resource "vsphere_virtual_machine" "dbvm" {
       network_id = "${data.vsphere_network.terraform_db.id}"
     }
     disk {
-	label = "tf-db.vmdk"
+	label = "${var.db["vm_name"]}.vmdk"
         size = 16
         thin_provisioned = true
     }
@@ -798,32 +798,29 @@ resource "vsphere_virtual_machine" "dbvm" {
 	# Guest customization to supply hostname and ip addresses to the guest
 	customize {
 	    linux_options {
-		host_name = "tfdb"
-		domain = "yasen.local"
+		host_name = "${var.db["vm_name"]}"
+		domain = "${var.db["domain"]}"
 	    }
 	    network_interface {
-		ipv4_address = "192.168.247.2"
-		ipv4_netmask = 24
-		dns_server_list = ["10.29.12.201", "8.8.8.8"]
-		dns_domain = "yasen.local"
+		ipv4_address = "${var.db["ip"]}"
+		ipv4_netmask = "${var.db["mask"]}"
+		dns_server_list = "${var.dns_server_list}"
+		dns_domain = "${var.db["domain"]}"
 	    }
-	    ipv4_gateway = "192.168.247.1"
+	    ipv4_gateway = "${var.db["gw"]}"
 	}
     }
     connection {
 	type = "ssh",
 	agent = "false"
-	# refer to the network interface if you have direct routing to this ip space
-	#host = "${vsphere_virtual_machine.vm.network_interface.0.ipv4_address}"
-	# refer to the network interface if you have direct routing to this ip space
-	host = "10.29.15.228"
-	user = "root"
-	password = "VMware1!"
+	host = "${var.db["nat_ip"] != "" ? var.db["nat_ip"] : var.db["ip"]}"
+	user = "${var.app["user"]}"
+	password = "${var.app["pass"]}"
 	script_path = "/root/tf.sh"
     }
     provisioner "remote-exec" {
 	inline = [ 
-	    "echo 'nameserver 10.29.12.201' >> /etc/resolv.conf", # By some reason guest customization didnt configure DNS, so this is a workaround
+	    "echo 'nameserver ${var.dns_server_list[0]}' >> /etc/resolv.conf",
 	    "rm -f /etc/yum.repos.d/vmware-tools.repo",
 	    "/usr/bin/systemctl stop firewalld",
 	    "/usr/bin/systemctl disable firewalld",
