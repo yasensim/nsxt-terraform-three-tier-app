@@ -697,7 +697,7 @@ resource "vsphere_virtual_machine" "webvm" {
       network_id = "${data.vsphere_network.terraform_web.id}"
     }
     disk {
-	label = "tf-web.vmdk"
+	label = "${var.web["vm_name"]}.vmdk"
         size = 16
         thin_provisioned = true
     }
@@ -707,31 +707,29 @@ resource "vsphere_virtual_machine" "webvm" {
 	# Guest customization to supply hostname and ip addresses to the guest
 	customize {
 	    linux_options {
-		host_name = "tfweb"
-		domain = "yasen.local"
+		host_name = "${var.web["vm_name"]}"
+		domain = "${var.web["domain"]}"
 	    }
 	    network_interface {
-		ipv4_address = "10.29.15.210"
-		ipv4_netmask = 28
-		dns_server_list = ["10.29.12.201", "8.8.8.8"]
-		dns_domain = "yasen.local"
+		ipv4_address = "${var.web["ip"]}"
+		ipv4_netmask = "${var.web["mask"]}"
+		dns_server_list = "${var.dns_server_list}"
+		dns_domain = "${var.web["domain"]}"
 	    }
-	    ipv4_gateway = "10.29.15.209"
+	    ipv4_gateway = "${var.web["gw"]}"
 	}
     }
     connection {
 	type = "ssh",
 	agent = "false"
-	# refer to the network interface if you have direct routing to this ip space
-	host = "10.29.15.210"
-	# refer to the network interface if you have direct routing to this ip space
-	user = "root"
-	password = "VMware1!"
+	host = "${var.web["nat_ip"] != "" ? var.web["nat_ip"] : var.web["ip"]}"
+	user = "${var.web["user"]}"
+	password = "${var.web["pass"]}"
 	script_path = "/root/tf.sh"
     }
     provisioner "remote-exec" {
 	inline = [ 
-	    "echo 'nameserver 10.29.12.201' >> /etc/resolv.conf", # By some reason guest customization didnt configure DNS, so this is a workaround
+	    "echo 'nameserver ${var.dns_server_list[0]}' >> /etc/resolv.conf",
 	    "rm -f /etc/yum.repos.d/vmware-tools.repo",
 	    "/usr/bin/systemctl stop firewalld",
 	    "/usr/bin/systemctl disable firewalld",
@@ -750,7 +748,7 @@ resource "vsphere_virtual_machine" "webvm" {
 	    "/usr/bin/echo \"ssl_certificate /etc/ssl/cert.pem;\" >> /etc/nginx/default.d/ssl.conf",
 	    "/usr/bin/echo \"ssl_certificate_key /etc/ssl/cert.key;\" >> /etc/nginx/default.d/ssl.conf",
 	    "/usr/bin/echo \"location / {\" >> /etc/nginx/default.d/ssl.conf",
-	    "/usr/bin/echo \"    proxy_pass https://192.168.245.2:8443;\" >> /etc/nginx/default.d/ssl.conf",
+	    "/usr/bin/echo \"    proxy_pass https://${var.app["ip"]}:${var.app_listen_port};\" >> /etc/nginx/default.d/ssl.conf",
 	    "/usr/bin/echo \"}\" >> /etc/nginx/default.d/ssl.conf",
 	    "/usr/bin/systemctl enable nginx.service",
 	    "/usr/bin/systemctl start nginx"
