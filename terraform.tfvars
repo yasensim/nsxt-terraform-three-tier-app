@@ -22,7 +22,7 @@ nsx_tag = "terraform-demo"
 vsphere{
     vsphere_user = "administrator@yasen.local"
     vsphere_password = "VMware1!"
-    vsphere_ip = "10.29.15.69"
+    vsphere_ip = "10.29.15.169"
     dc = "MyDC1"
     datastore = "NFS"
     resource_pool = "T_Cluster/Resources"
